@@ -23,6 +23,10 @@ The script automates this across all positions concurrently using `asyncio`.
 
 ```bash
 pip install aiohttp beautifulsoup4 lxml
+
+
+```
+```bash
 For Linux:
 pip install aiohttp beautifulsoup4 lxml --break-system-packages
 
